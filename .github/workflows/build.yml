@@ -1,0 +1,32 @@
+name: build
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/gradle-8.9
+          key: gradle-8.9-${{ hashFiles('**/*.gradle') }}
+      - name: Get Gradle
+        run: |
+          if [ ! -d "$HOME/gradle-8.9" ]; then
+            curl -sL https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/g.zip
+            unzip -q /tmp/g.zip -d "$HOME"
+          fi
+      - name: Build
+        run: |
+          n=0
+          until "$HOME/gradle-8.9/bin/gradle" assembleDebug --no-daemon; do
+            n=$((n+1))
+            if [ $n -ge 3 ]; then exit 1; fi
+            sleep $((60*n))
+          done
