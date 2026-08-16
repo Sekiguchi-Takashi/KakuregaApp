@@ -10,6 +10,7 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.text.InputType
 import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -43,6 +44,8 @@ class MainActivity : Activity() {
     private var pendingExportId: Long = -1
     private var player: MediaPlayer? = null
     private var imgTargetScene: String? = null
+    private var pendingLockSlot: String? = null
+    private var pendingLockElem: LockElem? = null
 
     private val vaultDir: File by lazy {
         val d = File(filesDir, "vault")
@@ -69,11 +72,23 @@ class MainActivity : Activity() {
         root = FrameLayout(this)
         setContentView(root)
         showScene()
+        val bad = LockRules.selfTest()
+        if (bad.length > 0) {
+            AlertDialog.Builder(this)
+                .setTitle("錠の自己テストに失敗")
+                .setMessage(bad + "\n\n診断の表示が信用できない状態です。")
+                .setPositiveButton("わかった", null)
+                .show()
+        }
     }
 
     private fun save() {
         House.save(this, house)
     }
+
+    private val opened = mutableSetOf<String>()   // このセッションで開けた収納
+
+    private fun prefs() = getSharedPreferences("kakurega", MODE_PRIVATE)
 
     // ---------- 部屋 ----------
 
@@ -129,6 +144,16 @@ class MainActivity : Activity() {
             editSpot(h)
             return
         }
+        val found = house.itemsAt(h.id)
+        if (found.isNotEmpty()) {
+            for (it2 in found) it2.at = Item.INVENTORY
+            save()
+            AlertDialog.Builder(this)
+                .setTitle("見つけた")
+                .setMessage(found.joinToString("、") { it.name } + " を手に入れた")
+                .setPositiveButton("持つ", null)
+                .show()
+        }
         if (h.kind == Hotspot.KIND_GOTO) {
             if (house.scene(h.target) == null) {
                 toast("行き先の部屋がありません")
@@ -137,7 +162,175 @@ class MainActivity : Activity() {
             sceneId = h.target
             showScene()
         } else {
-            showSlot(h.target)
+            tryOpen(h.target)
+        }
+    }
+
+    // ---------- 錠 ----------
+
+    private fun tryOpen(slotId: String) {
+        val def = house.slot(slotId)
+        if (def == null || def.lock.isOpen() || opened.contains(slotId)) {
+            showSlot(slotId)
+            return
+        }
+        val branches = def.lock.branches
+        // 満たせる枝を探す。足りない要素があれば、その要素の解除手順へ進む
+        for (b in branches) {
+            if (b.all { satisfied(it) }) {
+                opened.add(slotId)
+                showSlot(slotId)
+                return
+            }
+        }
+        // 一番あと少しの枝を選び、最初の未達要素を解除させる
+        var best: MutableList<LockElem>? = null
+        var bestMissing = 99
+        for (b in branches) {
+            val miss = b.count { !satisfied(it) }
+            if (miss < bestMissing) {
+                bestMissing = miss
+                best = b
+            }
+        }
+        val branch = best ?: return
+        val need = branch.firstOrNull { !satisfied(it) } ?: return
+        when (need.type) {
+            Elem.PIN -> askPin(slotId, need)
+            Elem.KEY -> {
+                val nm = house.item(need.param)?.name ?: "鍵"
+                AlertDialog.Builder(this)
+                    .setTitle(def.name)
+                    .setMessage(nm + " が要る。家のどこかにあるはずだ。")
+                    .setPositiveButton("わかった", null)
+                    .show()
+            }
+            Elem.BNSN -> askShares(slotId, need)
+            Elem.LAN -> AlertDialog.Builder(this)
+                .setTitle(def.name)
+                .setMessage("二台目の端末と繋がないと開かない錠です。この機能はまだ実装していません（Phase 4）。")
+                .setPositiveButton("わかった", null)
+                .show()
+            else -> showSlot(slotId)
+        }
+    }
+
+    private fun satisfied(e: LockElem): Boolean = when (e.type) {
+        Elem.HIDDEN -> true                       // たどり着いた時点で満たされている
+        Elem.KEY -> house.hasItem(e.param)
+        Elem.PIN -> pinOk.contains(e.param)
+        Elem.BNSN -> bnsnOk.contains(e.param)
+        else -> false
+    }
+
+    private val pinOk = mutableSetOf<String>()
+    private val bnsnOk = mutableSetOf<String>()
+
+    private fun askPin(slotId: String, e: LockElem) {
+        val until = prefs().getLong("pinlock_" + slotId, 0L)
+        val now = System.currentTimeMillis()
+        if (now < until) {
+            toast("しばらく待ってください（あと " + ((until - now) / 1000 + 1) + " 秒）")
+            return
+        }
+        val et = EditText(this)
+        et.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        et.hint = "暗証番号"
+        AlertDialog.Builder(this)
+            .setTitle("暗証番号")
+            .setView(et)
+            .setPositiveButton("開ける") { _, _ ->
+                if (checkPin(et.text.toString(), e.param)) {
+                    pinOk.add(e.param)
+                    prefs().edit().putInt("pinfail_" + slotId, 0).apply()
+                    tryOpen(slotId)
+                } else {
+                    val n = prefs().getInt("pinfail_" + slotId, 0) + 1
+                    val ed = prefs().edit().putInt("pinfail_" + slotId, n)
+                    if (n >= 5) {
+                        val wait = 30000L * (1L shl Math.min(n - 5, 6))
+                        ed.putLong("pinlock_" + slotId, System.currentTimeMillis() + wait)
+                        toast("違います。" + (wait / 1000) + " 秒待ってください")
+                    } else {
+                        toast("違います")
+                    }
+                    ed.apply()
+                }
+            }
+            .setNegativeButton("やめる", null)
+            .show()
+    }
+
+    private fun askShares(slotId: String, e: LockElem) {
+        val parts = e.param.split(":")
+        val k = if (parts.size > 1) (parts[1].toIntOrNull() ?: 2) else 2
+        AlertDialog.Builder(this)
+            .setTitle("分散片が要る")
+            .setMessage("この錠は分散片を " + k + " 個そろえると開きます。端末の中には取り込みません。開けるときだけ選んでください。")
+            .setPositiveButton("片を選ぶ") { _, _ ->
+                pendingLockSlot = slotId
+                pendingLockElem = e
+                val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                i.addCategory(Intent.CATEGORY_OPENABLE)
+                i.type = "*/*"
+                i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                startActivityForResult(i, REQ_SHARES)
+            }
+            .setNegativeButton("やめる", null)
+            .show()
+    }
+
+    private fun checkPin(input: String, stored: String): Boolean {
+        val ix = stored.indexOf(':')
+        if (ix <= 0) return false
+        val salt = stored.substring(0, ix)
+        return hashPin(salt, input) == stored
+    }
+
+    private fun hashPin(salt: String, pin: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val d = md.digest((salt + "|" + pin).toByteArray(Charsets.UTF_8))
+        val sb = StringBuilder(salt)
+        sb.append(':')
+        for (b in d) sb.append(String.format("%02x", b))
+        return sb.toString()
+    }
+
+    private fun newPinHash(pin: String): String {
+        val r = java.security.SecureRandom()
+        val s = ByteArray(8)
+        r.nextBytes(s)
+        val sb = StringBuilder()
+        for (b in s) sb.append(String.format("%02x", b))
+        return hashPin(sb.toString(), pin)
+    }
+
+    // .bnsn のヘッダだけを読む（BunsanApp の FORMAT_SPEC.md 準拠、復元はしない）
+    private fun readBnsn(u: Uri): Pair<String, Int>? {
+        return try {
+            contentResolver.openInputStream(u)?.use { ins ->
+                val magic = ByteArray(4)
+                if (ins.read(magic) != 4) return null
+                if (String(magic, Charsets.US_ASCII) != "BNSN") return null
+                val lenB = ByteArray(4)
+                if (ins.read(lenB) != 4) return null
+                var len = 0
+                for (b in lenB) len = (len shl 8) or (b.toInt() and 0xFF)
+                if (len <= 0 || len > 65536) return null
+                val hb = ByteArray(len)
+                var off = 0
+                while (off < len) {
+                    val r = ins.read(hb, off, len - off)
+                    if (r <= 0) break
+                    off += r
+                }
+                val o = org.json.JSONObject(String(hb, 0, off, Charsets.UTF_8))
+                val id = o.optString("id", "")
+                val x = o.optInt("x", -1)
+                if (id.length == 0 || x < 0) null else Pair(id, x)
+            }
+        } catch (ex: Exception) {
+            null
         }
     }
 
@@ -162,7 +355,7 @@ class MainActivity : Activity() {
         val items = if (editing)
             arrayOf("部屋の一覧・追加", "この部屋の画像を選ぶ", "この部屋の名前", "増築モードを終わる")
         else
-            arrayOf("調べられる場所を光らせる", "部屋の一覧・追加", "増築モードに入る")
+            arrayOf("調べられる場所を光らせる", "持ちもの", "部屋の一覧・追加", "増築モードに入る")
         AlertDialog.Builder(this)
             .setTitle(if (editing) "増築メニュー" else "メニュー")
             .setItems(items) { _, w ->
@@ -179,8 +372,9 @@ class MainActivity : Activity() {
                 } else {
                     when (w) {
                         0 -> showScene().also { root.postDelayed({ hintNow() }, 100) }
-                        1 -> showScenes()
-                        2 -> {
+                        1 -> showInventory()
+                        2 -> showScenes()
+                        3 -> {
                             editing = true
                             showScene()
                         }
@@ -575,6 +769,16 @@ class MainActivity : Activity() {
         listWrap.addView(list)
         col.addView(listWrap, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
+        if (def != null) {
+            val lk = TextView(this)
+            lk.text = "錠: " + def.lock.describe()
+            lk.textSize = 12f
+            lk.setTextColor(Color.parseColor("#7BD88F"))
+            lk.setPadding(0, 12, 0, 0)
+            lk.setOnClickListener { lockMenu(def) }
+            col.addView(lk)
+        }
+
         val btns = LinearLayout(this)
         val put = Button(this)
         put.text = "しまう"
@@ -582,10 +786,188 @@ class MainActivity : Activity() {
         val back = Button(this)
         back.text = "部屋にもどる"
         back.setOnClickListener { showScene() }
+        val lockBtn = Button(this)
+        lockBtn.text = "錠"
+        lockBtn.setOnClickListener { if (def != null) lockMenu(def) }
         btns.addView(put, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        btns.addView(lockBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         btns.addView(back, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         col.addView(btns)
         root.addView(col)
+    }
+
+    // ---------- 錠の設定 ----------
+
+    private fun lockMenu(def: SlotDef) {
+        val d = LockRules.diagnose(def.lock)
+        val sb = StringBuilder()
+        sb.append("いまの錠: ").append(def.lock.describe()).append("\n\n")
+        sb.append(badge(d)).append("\n")
+        if (d.lockoutRisk.isNotEmpty()) {
+            sb.append("失うと開かなくなる: ").append(d.lockoutRisk.joinToString("、")).append("\n")
+        }
+        for (r in d.remedies) sb.append("・").append(r).append("\n")
+        AlertDialog.Builder(this)
+            .setTitle(def.name + " の錠")
+            .setMessage(sb.toString())
+            .setPositiveButton("錠を変える") { _, _ -> choosePreset(def) }
+            .setNegativeButton("閉じる", null)
+            .show()
+    }
+
+    private fun badge(d: LockDiag): String {
+        val names = arrayOf("A1 のぞき見", "A2 端末を触られる", "A3 端末を解析される", "A4 家の中の共犯")
+        val sb = StringBuilder()
+        for (i in 0 until 4) {
+            sb.append(if (d.defended[i]) "○ " else "× ").append(names[i]).append("\n")
+        }
+        sb.append("実効強度を決めているのは: ").append(d.weakest)
+        return sb.toString()
+    }
+
+    private fun choosePreset(def: SlotDef) {
+        AlertDialog.Builder(this)
+            .setTitle("錠を選ぶ")
+            .setItems(LockRules.PRESET_NAMES) { _, idx ->
+                if (idx == 5) {
+                    def.lock = Lock.none()
+                    save()
+                    toast("錠をはずしました")
+                    showSlot(def.id)
+                    return@setItems
+                }
+                buildLock(def, idx)
+            }
+            .show()
+    }
+
+    private fun buildLock(def: SlotDef, idx: Int) {
+        val needs = LockRules.presetNeeds(idx)
+        var itemId = ""
+        var pinHash = ""
+        var bnsnParam = ""
+        var outside = false
+
+        fun finish() {
+            def.lock = LockRules.buildPreset(idx, itemId, pinHash, bnsnParam, outside)
+            save()
+            opened.add(def.id)
+            lockMenu(def)
+        }
+
+        fun askBnsn(after: () -> Unit) {
+            val idEt = EditText(this)
+            idEt.hint = "分散セットのid（片のヘッダに入っている値）"
+            val kEt = EditText(this)
+            kEt.inputType = InputType.TYPE_CLASS_NUMBER
+            kEt.hint = "必要な片の数 k"
+            val cb = CheckBox(this)
+            cb.text = "片は端末の外（別のメディアや人）に置いた"
+            val box = LinearLayout(this)
+            box.orientation = LinearLayout.VERTICAL
+            box.setPadding(40, 20, 40, 0)
+            box.addView(idEt)
+            box.addView(kEt)
+            box.addView(cb)
+            AlertDialog.Builder(this)
+                .setTitle("分散片で守る")
+                .setView(box)
+                .setPositiveButton("次へ") { _, _ ->
+                    val id = idEt.text.toString().trim()
+                    val k = kEt.text.toString().trim().toIntOrNull() ?: 2
+                    if (id.length == 0) {
+                        toast("idが要ります")
+                    } else {
+                        bnsnParam = id + ":" + k
+                        outside = cb.isChecked
+                        after()
+                    }
+                }
+                .setNegativeButton("やめる", null)
+                .show()
+        }
+
+        fun askNewPin(after: () -> Unit) {
+            val et = EditText(this)
+            et.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            et.hint = "4〜8桁"
+            AlertDialog.Builder(this)
+                .setTitle("暗証番号を決める")
+                .setView(et)
+                .setPositiveButton("決定") { _, _ ->
+                    val v = et.text.toString().trim()
+                    if (v.length < 4) {
+                        toast("4桁以上にしてください")
+                    } else {
+                        pinHash = newPinHash(v)
+                        after()
+                    }
+                }
+                .setNegativeButton("やめる", null)
+                .show()
+        }
+
+        fun askKey(after: () -> Unit) {
+            val et = EditText(this)
+            et.setText("鍵")
+            AlertDialog.Builder(this)
+                .setTitle("鍵アイテムを作る")
+                .setMessage("この鍵を家のどこかに置きます。置き場所はこのあと選びます。")
+                .setView(et)
+                .setPositiveButton("作る") { _, _ ->
+                    val nm = et.text.toString().trim()
+                    val it2 = Item(newId("i"), if (nm.length > 0) nm else "鍵", Item.INVENTORY)
+                    house.items.add(it2)
+                    itemId = it2.id
+                    save()
+                    placeItem(it2) { after() }
+                }
+                .setNegativeButton("やめる", null)
+                .show()
+        }
+
+        var chain: () -> Unit = { finish() }
+        for (i in needs.indices.reversed()) {
+            val next = chain
+            val what = needs[i]
+            chain = when (what) {
+                0 -> ({ askKey(next) })
+                1 -> ({ askNewPin(next) })
+                else -> ({ askBnsn(next) })
+            }
+        }
+        chain()
+    }
+
+    private fun placeItem(item: Item, after: () -> Unit) {
+        val spots = mutableListOf<Pair<Scene, Hotspot>>()
+        for (sc in house.scenes) for (h in sc.hotspots) spots.add(Pair(sc, h))
+        if (spots.isEmpty()) {
+            after()
+            return
+        }
+        val names = spots.map { it.first.name + "　" + (if (it.second.hidden) "（隠し）" else "") + it.second.label }
+            .toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(item.name + " をどこに置く")
+            .setItems(names) { _, i ->
+                item.at = spots[i].second.id
+                save()
+                toast(spots[i].first.name + " に置きました")
+                after()
+            }
+            .setOnCancelListener { after() }
+            .show()
+    }
+
+    private fun showInventory() {
+        val have = house.items.filter { it.at == Item.INVENTORY }
+        val msg = if (have.isEmpty()) "何も持っていない。" else have.joinToString("\n") { "・" + it.name }
+        AlertDialog.Builder(this)
+            .setTitle("持ちもの")
+            .setMessage(msg)
+            .setPositiveButton("閉じる", null)
+            .show()
     }
 
     private fun fileMenu(f: FileRow) {
@@ -815,6 +1197,34 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 toast("失敗しました")
             }
+        } else if (requestCode == REQ_SHARES) {
+            val slot = pendingLockSlot ?: return
+            val e = pendingLockElem ?: return
+            val parts = e.param.split(":")
+            val wantId = parts[0]
+            val k = if (parts.size > 1) (parts[1].toIntOrNull() ?: 2) else 2
+            val uris = mutableListOf<Uri>()
+            val cd = data.clipData
+            if (cd != null) {
+                for (i in 0 until cd.itemCount) uris.add(cd.getItemAt(i).uri)
+            } else {
+                data.data?.let { uris.add(it) }
+            }
+            val xs = mutableSetOf<Int>()
+            var wrong = 0
+            for (u in uris) {
+                val r = readBnsn(u)
+                if (r == null) wrong++
+                else if (r.first != wantId) wrong++
+                else xs.add(r.second)
+            }
+            if (xs.size >= k) {
+                bnsnOk.add(e.param)
+                toast("片が " + xs.size + " 個そろった")
+                tryOpen(slot)
+            } else {
+                toast("足りません（有効な片 " + xs.size + " / 必要 " + k + "）")
+            }
         } else if (requestCode == REQ_SCENE_IMG) {
             val u = data.data ?: return
             val target = imgTargetScene ?: return
@@ -936,5 +1346,6 @@ class MainActivity : Activity() {
         private const val REQ_IMPORT = 1
         private const val REQ_EXPORT = 2
         private const val REQ_SCENE_IMG = 3
+        private const val REQ_SHARES = 4
     }
 }
