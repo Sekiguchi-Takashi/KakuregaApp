@@ -144,6 +144,13 @@ class MainActivity : Activity() {
     private fun loadSceneBitmap(sc: Scene): Bitmap? {
         val nm = sc.image
         if (nm == null) return null
+        if (nm.startsWith(ASSET_PREFIX)) {
+            return try {
+                assets.open(nm.substring(ASSET_PREFIX.length)).use { BitmapFactory.decodeStream(it) }
+            } catch (e: Exception) {
+                null
+            }
+        }
         val f = File(sceneDir, nm)
         if (!f.exists()) return null
         return decodeScaled(f)
@@ -820,7 +827,7 @@ class MainActivity : Activity() {
                 val old = sc.image
                 sc.image = stored
                 save()
-                if (old != null) File(sceneDir, old).delete()
+                if (old != null && !old.startsWith(ASSET_PREFIX)) File(sceneDir, old).delete()
                 toast("画像を置きました")
             } catch (e: Exception) {
                 toast("画像を読み込めませんでした")

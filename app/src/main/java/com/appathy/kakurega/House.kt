@@ -107,6 +107,8 @@ class SlotDef(val id: String, var name: String, var hint: String, var lockPreset
     }
 }
 
+const val ASSET_PREFIX = "asset:"
+
 fun newId(prefix: String): String =
     prefix + UUID.randomUUID().toString().replace("-", "").substring(0, 10)
 
@@ -153,13 +155,18 @@ class House(
                 val slots = mutableListOf<SlotDef>()
                 val ka = o.optJSONArray("slots")
                 if (ka != null) for (i in 0 until ka.length()) slots.add(SlotDef.fromJson(ka.getJSONObject(i)))
-                if (scenes.isEmpty()) seed()
-                else House(
-                    o.optInt("version", 1),
-                    o.optString("startScene", scenes[0].id),
-                    scenes,
-                    slots
-                )
+                if (scenes.isEmpty()) {
+                    seed()
+                } else {
+                    val h = House(
+                        o.optInt("version", 1),
+                        o.optString("startScene", scenes[0].id),
+                        scenes,
+                        slots
+                    )
+                    if (migrate(h)) save(ctx, h)
+                    h
+                }
             } catch (e: Exception) {
                 seed()
             }
@@ -171,6 +178,74 @@ class House(
             } catch (e: Exception) {
             }
         }
+
+        // 版が上がったときだけ家を書き足す。既存の部屋・収納・配置には触れない
+        private fun migrate(h: House): Boolean {
+            var changed = false
+            if (h.version < 2) {
+                if (h.scene("atelier") == null) {
+                    val hs = mutableListOf<Hotspot>()
+                    for (r in ATELIER) {
+                        val slotId = r[0] as String
+                        val name = r[1] as String
+                        val kind = r[6] as String
+                        if (kind == Hotspot.KIND_SLOT && h.slot(slotId) == null) {
+                            h.slots.add(SlotDef(slotId, name, r[7] as String, "none"))
+                        }
+                        hs.add(
+                            Hotspot(
+                                "h_" + slotId, name,
+                                (r[2] as Double).toFloat(), (r[3] as Double).toFloat(),
+                                (r[4] as Double).toFloat(), (r[5] as Double).toFloat(),
+                                r[8] as Boolean, kind, slotId, "panel"
+                            )
+                        )
+                    }
+                    val at = Scene("atelier", "資料室", ASSET_PREFIX + "room_atelier.jpg", hs)
+                    h.scenes.add(at)
+                    val living = h.scene("living")
+                    if (living != null && living.hotspots.none { it.kind == Hotspot.KIND_GOTO && it.target == "atelier" }) {
+                        living.hotspots.add(
+                            Hotspot(newId("h"), "資料室へ", 0.02f, 0.10f, 0.13f, 0.20f,
+                                false, Hotspot.KIND_GOTO, "atelier", "door")
+                        )
+                    }
+                    h.startScene = "atelier"
+                }
+                h.version = 2
+                changed = true
+            }
+            return changed
+        }
+
+        // slotId, 表示名, rx, ry, rw, rh, kind, ヒント, 隠しか
+        private val ATELIER: List<List<Any>> = listOf(
+            listOf("at_bookshelf", "本棚", 0.005, 0.03, 0.14, 0.34, Hotspot.KIND_SLOT, "背表紙の奥", false),
+            listOf("at_drawer", "引き出し", 0.005, 0.51, 0.155, 0.16, Hotspot.KIND_SLOT, "写真向け", false),
+            listOf("at_files", "書類棚", 0.26, 0.41, 0.27, 0.10, Hotspot.KIND_SLOT, "窓下の棚", false),
+            listOf("at_table", "作業台", 0.33, 0.48, 0.32, 0.06, Hotspot.KIND_SLOT, "広げっぱなしの資料", false),
+            listOf("at_boxes", "台の下の箱", 0.34, 0.555, 0.30, 0.11, Hotspot.KIND_SLOT, "まとめて放り込む場所", false),
+            listOf("at_shelf_r", "資料棚", 0.80, 0.30, 0.195, 0.38, Hotspot.KIND_SLOT, "右壁いっぱいの棚", false),
+            listOf("at_loft", "ロフト棚", 0.71, 0.03, 0.28, 0.16, Hotspot.KIND_SLOT, "はしごを登った先", false),
+            listOf("at_coffee", "コーヒーテーブル", 0.60, 0.83, 0.32, 0.16, Hotspot.KIND_SLOT, "手前の低い机", false),
+            listOf("at_sofa", "ソファ", 0.855, 0.68, 0.14, 0.13, Hotspot.KIND_SLOT, "クッションの間", false),
+            listOf("living", "リビングへ", 0.72, 0.32, 0.06, 0.19, Hotspot.KIND_GOTO, "", false),
+            listOf("at_clock", "時計の裏", 0.428, 0.235, 0.035, 0.055, Hotspot.KIND_SLOT, "文字盤の裏側", true),
+            listOf("at_pic_c", "絵の裏", 0.43, 0.295, 0.03, 0.05, Hotspot.KIND_SLOT, "額と壁のすきま", true),
+            listOf("at_pic_r", "額の裏", 0.673, 0.33, 0.028, 0.045, Hotspot.KIND_SLOT, "扉の横の額", true),
+            listOf("at_pot", "鉢植えの土", 0.165, 0.52, 0.05, 0.08, Hotspot.KIND_SLOT, "根の下", true),
+            listOf("at_ladder_l", "はしごの裏", 0.10, 0.38, 0.10, 0.12, Hotspot.KIND_SLOT, "立てかけた影", true),
+            listOf("at_ladder_r", "はしごの段", 0.77, 0.25, 0.07, 0.12, Hotspot.KIND_SLOT, "踏板の裏", true),
+            listOf("at_rug", "ラグの下", 0.27, 0.67, 0.42, 0.07, Hotspot.KIND_SLOT, "めくった下", true),
+            listOf("at_floor", "床板の下", 0.38, 0.76, 0.16, 0.06, Hotspot.KIND_SLOT, "浮いている一枚", true),
+            listOf("at_book", "本のページ", 0.01, 0.85, 0.19, 0.14, Hotspot.KIND_SLOT, "開いたまま挟む", true),
+            listOf("at_pen", "ペン立て", 0.235, 0.83, 0.065, 0.11, Hotspot.KIND_SLOT, "ペンの底", true),
+            listOf("at_greenbook", "緑の本の下", 0.30, 0.91, 0.13, 0.085, Hotspot.KIND_SLOT, "積んだ本の間", true),
+            listOf("at_mug", "マグカップ", 0.785, 0.90, 0.045, 0.07, Hotspot.KIND_SLOT, "飲みかけの底", true),
+            listOf("at_light", "天井の照明", 0.325, 0.085, 0.035, 0.028, Hotspot.KIND_SLOT, "埋め込みの奥", true),
+            listOf("at_windowpot", "窓辺の鉢", 0.385, 0.345, 0.04, 0.055, Hotspot.KIND_SLOT, "受け皿の下", true),
+            listOf("at_chair", "椅子の下", 0.60, 0.42, 0.055, 0.06, Hotspot.KIND_SLOT, "座面の裏", true)
+        )
 
         private fun seed(): House {
             val slots = mutableListOf(
@@ -188,7 +263,9 @@ class House(
                 Hotspot("h_floor", "床下", 0.36f, 0.86f, 0.18f, 0.09f, true, Hotspot.KIND_SLOT, "floor", "floor")
             )
             val living = Scene("living", "リビング", null, hs)
-            return House(1, "living", mutableListOf(living), slots)
+            val h = House(1, "living", mutableListOf(living), slots)
+            migrate(h)
+            return h
         }
     }
 }
