@@ -46,6 +46,12 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "kakurega.db", null, 1) {
         return writableDatabase.insert("files", null, v)
     }
 
+    fun moveFile(id: Long, slot: String) {
+        val v = ContentValues()
+        v.put("slot_id", slot)
+        writableDatabase.update("files", v, "id=?", arrayOf(id.toString()))
+    }
+
     fun deleteFile(id: Long) {
         writableDatabase.delete("files", "id=?", arrayOf(id.toString()))
     }

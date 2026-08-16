@@ -17,6 +17,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -31,26 +33,16 @@ import java.util.UUID
 class MainActivity : Activity() {
 
     private lateinit var db: Db
+    private lateinit var house: House
     private lateinit var root: FrameLayout
+
     private var screen = "scene"
+    private var sceneId = ""
     private var currentSlot: String? = null
+    private var editing = false
     private var pendingExportId: Long = -1
     private var player: MediaPlayer? = null
-
-    private val slotNames = mapOf(
-        "bookshelf" to "本棚",
-        "stereo" to "ステレオ",
-        "tvstand" to "テレビ台",
-        "drawer" to "引き出し",
-        "floor" to "床下"
-    )
-    private val slotHints = mapOf(
-        "bookshelf" to "PDF・テキスト向け（どのファイルでも置けます）",
-        "stereo" to "音楽向け（どのファイルでも置けます）",
-        "tvstand" to "動画向け（どのファイルでも置けます）",
-        "drawer" to "写真向け（どのファイルでも置けます）",
-        "floor" to "隠し場所。なんでも"
-    )
+    private var imgTargetScene: String? = null
 
     private val vaultDir: File by lazy {
         val d = File(filesDir, "vault")
@@ -60,13 +52,30 @@ class MainActivity : Activity() {
         d
     }
 
+    private val sceneDir: File by lazy {
+        val d = File(filesDir, "scenes")
+        if (!d.exists()) d.mkdirs()
+        val nm = File(d, ".nomedia")
+        if (!nm.exists()) nm.createNewFile()
+        d
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         db = Db(this)
+        house = House.load(this)
+        sceneId = house.startScene
+        if (house.scene(sceneId) == null && house.scenes.size > 0) sceneId = house.scenes[0].id
         root = FrameLayout(this)
         setContentView(root)
         showScene()
     }
+
+    private fun save() {
+        House.save(this, house)
+    }
+
+    // ---------- 部屋 ----------
 
     private fun showScene() {
         stopPlayer()
@@ -74,22 +83,446 @@ class MainActivity : Activity() {
         screen = "scene"
         currentSlot = null
         root.removeAllViews()
+        val sc = house.scene(sceneId)
+        if (sc == null) {
+            toast("部屋がありません")
+            return
+        }
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
         col.setBackgroundColor(Color.parseColor("#1B1B22"))
-        val bar = TextView(this)
-        bar.text = "カクレガ ― 家具をタップ / 長押しで調べられる場所を表示"
-        bar.setTextColor(Color.parseColor("#8888AA"))
-        bar.textSize = 12f
-        bar.setPadding(24, 24, 24, 12)
+
+        val bar = LinearLayout(this)
+        bar.setPadding(20, 16, 20, 8)
+        val title = TextView(this)
+        title.text = sc.name + (if (editing) "　［増築モード］" else "")
+        title.setTextColor(if (editing) Color.parseColor("#FFD54F") else Color.parseColor("#DDDDEE"))
+        title.textSize = 16f
+        title.gravity = Gravity.CENTER_VERTICAL
+        val menu = Button(this)
+        menu.text = "メニュー"
+        menu.setOnClickListener { mainMenu() }
+        bar.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        bar.addView(menu)
         col.addView(bar)
-        val scene = SceneView(this, { id -> showSlot(id) }, { db.counts() })
-        col.addView(
-            scene,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        )
+
+        val note = TextView(this)
+        note.text = if (editing)
+            "空いている所を指でなぞって新しい場所を作る／既存の枠をタップで編集"
+        else
+            "家具をタップ　長押しで調べられる場所を表示"
+        note.setTextColor(Color.parseColor("#8888AA"))
+        note.textSize = 11f
+        note.setPadding(20, 0, 20, 10)
+        col.addView(note)
+
+        val bmp = loadSceneBitmap(sc)
+        val view = SceneView(this, sc, bmp, { db.counts() }, { h -> onSpot(h) })
+        view.editMode = editing
+        view.onDrawn = { l, t, w, hh -> createSpot(sc, l, t, w, hh) }
+        col.addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(col)
     }
+
+    private fun onSpot(h: Hotspot) {
+        if (editing) {
+            editSpot(h)
+            return
+        }
+        if (h.kind == Hotspot.KIND_GOTO) {
+            if (house.scene(h.target) == null) {
+                toast("行き先の部屋がありません")
+                return
+            }
+            sceneId = h.target
+            showScene()
+        } else {
+            showSlot(h.target)
+        }
+    }
+
+    private fun loadSceneBitmap(sc: Scene): Bitmap? {
+        val nm = sc.image
+        if (nm == null) return null
+        val f = File(sceneDir, nm)
+        if (!f.exists()) return null
+        return decodeScaled(f)
+    }
+
+    // ---------- メニュー ----------
+
+    private fun mainMenu() {
+        val items = if (editing)
+            arrayOf("部屋の一覧・追加", "この部屋の画像を選ぶ", "この部屋の名前", "増築モードを終わる")
+        else
+            arrayOf("調べられる場所を光らせる", "部屋の一覧・追加", "増築モードに入る")
+        AlertDialog.Builder(this)
+            .setTitle(if (editing) "増築メニュー" else "メニュー")
+            .setItems(items) { _, w ->
+                if (editing) {
+                    when (w) {
+                        0 -> showScenes()
+                        1 -> pickSceneImage(sceneId)
+                        2 -> renameScene()
+                        3 -> {
+                            editing = false
+                            showScene()
+                        }
+                    }
+                } else {
+                    when (w) {
+                        0 -> showScene().also { root.postDelayed({ hintNow() }, 100) }
+                        1 -> showScenes()
+                        2 -> {
+                            editing = true
+                            showScene()
+                        }
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun hintNow() {
+        val col = root.getChildAt(0)
+        if (col is LinearLayout) {
+            for (i in 0 until col.childCount) {
+                val v = col.getChildAt(i)
+                if (v is SceneView) v.showHints()
+            }
+        }
+    }
+
+    private fun renameScene() {
+        val sc = house.scene(sceneId) ?: return
+        val et = EditText(this)
+        et.setText(sc.name)
+        AlertDialog.Builder(this)
+            .setTitle("部屋の名前")
+            .setView(et)
+            .setPositiveButton("決定") { _, _ ->
+                val t = et.text.toString().trim()
+                if (t.length > 0) {
+                    sc.name = t
+                    save()
+                    showScene()
+                }
+            }
+            .setNegativeButton("やめる", null)
+            .show()
+    }
+
+    // ---------- 部屋の一覧 ----------
+
+    private fun showScenes() {
+        screen = "scenes"
+        root.removeAllViews()
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setBackgroundColor(Color.parseColor("#22222A"))
+        col.setPadding(24, 24, 24, 24)
+        val t = TextView(this)
+        t.text = "部屋の一覧"
+        t.textSize = 20f
+        t.setTextColor(Color.WHITE)
+        col.addView(t)
+        val note = TextView(this)
+        note.text = "★は最初に入る部屋。タップでその部屋へ移動、長押しで操作。"
+        note.textSize = 11f
+        note.setTextColor(Color.parseColor("#8888AA"))
+        col.addView(note)
+
+        val sv = ScrollView(this)
+        val list = LinearLayout(this)
+        list.orientation = LinearLayout.VERTICAL
+        for (s in house.scenes) {
+            val row = TextView(this)
+            val star = if (s.id == house.startScene) "★ " else "　 "
+            val img = if (s.image == null) "（描画）" else "（画像）"
+            row.text = star + s.name + "　" + img + "　場所 " + s.hotspots.size
+            row.setTextColor(Color.parseColor("#DDDDEE"))
+            row.setPadding(8, 26, 8, 26)
+            row.setOnClickListener {
+                sceneId = s.id
+                showScene()
+            }
+            row.setOnLongClickListener {
+                sceneMenu(s)
+                true
+            }
+            list.addView(row)
+        }
+        sv.addView(list)
+        col.addView(sv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        val btns = LinearLayout(this)
+        val add = Button(this)
+        add.text = "部屋を追加"
+        add.setOnClickListener { addScene() }
+        val back = Button(this)
+        back.text = "もどる"
+        back.setOnClickListener { showScene() }
+        btns.addView(add, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        btns.addView(back, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(btns)
+        root.addView(col)
+    }
+
+    private fun sceneMenu(s: Scene) {
+        val items = arrayOf("画像を選ぶ", "画像を外す", "名前を変える", "最初に入る部屋にする", "この部屋へ行く扉を今の部屋に作る", "部屋を削除")
+        AlertDialog.Builder(this)
+            .setTitle(s.name)
+            .setItems(items) { _, w ->
+                when (w) {
+                    0 -> pickSceneImage(s.id)
+                    1 -> {
+                        s.image = null
+                        save()
+                        showScenes()
+                    }
+                    2 -> {
+                        val et = EditText(this)
+                        et.setText(s.name)
+                        AlertDialog.Builder(this)
+                            .setTitle("部屋の名前")
+                            .setView(et)
+                            .setPositiveButton("決定") { _, _ ->
+                                val t = et.text.toString().trim()
+                                if (t.length > 0) {
+                                    s.name = t
+                                    save()
+                                    showScenes()
+                                }
+                            }
+                            .setNegativeButton("やめる", null)
+                            .show()
+                    }
+                    3 -> {
+                        house.startScene = s.id
+                        save()
+                        showScenes()
+                    }
+                    4 -> makeDoorTo(s)
+                    5 -> deleteScene(s)
+                }
+            }
+            .show()
+    }
+
+    private fun makeDoorTo(s: Scene) {
+        val cur = house.scene(sceneId)
+        if (cur == null) return
+        if (cur.id == s.id) {
+            toast("同じ部屋です")
+            return
+        }
+        cur.hotspots.add(
+            Hotspot(
+                newId("h"), s.name + "へ", 0.02f, 0.10f, 0.14f, 0.22f,
+                false, Hotspot.KIND_GOTO, s.id, "door"
+            )
+        )
+        save()
+        toast(cur.name + " に扉を作りました（増築モードで位置を直せます）")
+        showScenes()
+    }
+
+    private fun deleteScene(s: Scene) {
+        if (house.scenes.size <= 1) {
+            toast("最後の部屋は消せません")
+            return
+        }
+        val slotIds = mutableListOf<String>()
+        for (h in s.hotspots) if (h.kind == Hotspot.KIND_SLOT) slotIds.add(h.target)
+        var files = 0
+        for (id in slotIds) files += db.filesIn(id).size
+        val msg = if (files > 0)
+            "この部屋には " + files + " 個のファイルがあります。部屋を消してもファイルは残りますが、たどり着けなくなります。"
+        else
+            "この部屋を削除します。"
+        AlertDialog.Builder(this)
+            .setTitle(s.name + " を削除")
+            .setMessage(msg)
+            .setPositiveButton("削除") { _, _ ->
+                house.scenes.remove(s)
+                for (o in house.scenes) {
+                    val it = o.hotspots.iterator()
+                    while (it.hasNext()) {
+                        val h = it.next()
+                        if (h.kind == Hotspot.KIND_GOTO && h.target == s.id) it.remove()
+                    }
+                }
+                if (house.startScene == s.id) house.startScene = house.scenes[0].id
+                if (sceneId == s.id) sceneId = house.scenes[0].id
+                save()
+                showScenes()
+            }
+            .setNegativeButton("やめる", null)
+            .show()
+    }
+
+    private fun addScene() {
+        val et = EditText(this)
+        et.hint = "部屋の名前"
+        AlertDialog.Builder(this)
+            .setTitle("部屋を追加")
+            .setView(et)
+            .setPositiveButton("追加") { _, _ ->
+                val t = et.text.toString().trim()
+                val name = if (t.length > 0) t else "新しい部屋"
+                val s = Scene(newId("s"), name, null, mutableListOf())
+                house.scenes.add(s)
+                save()
+                showScenes()
+            }
+            .setNegativeButton("やめる", null)
+            .show()
+    }
+
+    private fun pickSceneImage(target: String) {
+        imgTargetScene = target
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+        i.addCategory(Intent.CATEGORY_OPENABLE)
+        i.type = "image/*"
+        startActivityForResult(i, REQ_SCENE_IMG)
+    }
+
+    // ---------- ホットスポット編集 ----------
+
+    private fun createSpot(sc: Scene, l: Float, t: Float, w: Float, h: Float) {
+        val items = arrayOf("収納（ファイルを置く）", "移動口（別の部屋へ）")
+        AlertDialog.Builder(this)
+            .setTitle("ここを何にしますか")
+            .setItems(items) { _, which ->
+                if (which == 0) {
+                    val et = EditText(this)
+                    et.hint = "名前（例: たんす）"
+                    val cb = CheckBox(this)
+                    cb.text = "隠し場所にする（名前も枠も出さない）"
+                    val box = LinearLayout(this)
+                    box.orientation = LinearLayout.VERTICAL
+                    box.setPadding(40, 20, 40, 0)
+                    box.addView(et)
+                    box.addView(cb)
+                    AlertDialog.Builder(this)
+                        .setTitle("収納を作る")
+                        .setView(box)
+                        .setPositiveButton("作る") { _, _ ->
+                            val nm = et.text.toString().trim()
+                            val name = if (nm.length > 0) nm else "収納"
+                            val slotId = newId("k")
+                            house.slots.add(SlotDef(slotId, name, "どのファイルでも置けます", "none"))
+                            sc.hotspots.add(
+                                Hotspot(newId("h"), name, l, t, w, h, cb.isChecked, Hotspot.KIND_SLOT, slotId, "panel")
+                            )
+                            save()
+                            showScene()
+                        }
+                        .setNegativeButton("やめる", null)
+                        .show()
+                } else {
+                    val others = house.scenes.filter { it.id != sc.id }
+                    if (others.isEmpty()) {
+                        toast("先に別の部屋を追加してください")
+                        return@setItems
+                    }
+                    val names = others.map { it.name }.toTypedArray()
+                    AlertDialog.Builder(this)
+                        .setTitle("どの部屋へ")
+                        .setItems(names) { _, idx ->
+                            val dst = others[idx]
+                            sc.hotspots.add(
+                                Hotspot(newId("h"), dst.name + "へ", l, t, w, h, false, Hotspot.KIND_GOTO, dst.id, "door")
+                            )
+                            save()
+                            showScene()
+                        }
+                        .show()
+                }
+            }
+            .show()
+    }
+
+    private fun editSpot(h: Hotspot) {
+        val sc = house.scene(sceneId) ?: return
+        val items = arrayOf("名前を変える", if (h.hidden) "隠しを解除" else "隠し場所にする", "少し大きく", "少し小さく", "削除")
+        AlertDialog.Builder(this)
+            .setTitle(h.label)
+            .setItems(items) { _, w ->
+                when (w) {
+                    0 -> {
+                        val et = EditText(this)
+                        et.setText(h.label)
+                        AlertDialog.Builder(this)
+                            .setTitle("名前")
+                            .setView(et)
+                            .setPositiveButton("決定") { _, _ ->
+                                val t = et.text.toString().trim()
+                                if (t.length > 0) {
+                                    h.label = t
+                                    if (h.kind == Hotspot.KIND_SLOT) house.slot(h.target)?.name = t
+                                    save()
+                                    showScene()
+                                }
+                            }
+                            .setNegativeButton("やめる", null)
+                            .show()
+                    }
+                    1 -> {
+                        h.hidden = !h.hidden
+                        save()
+                        showScene()
+                    }
+                    2 -> {
+                        scaleSpot(h, 1.15f)
+                        save()
+                        showScene()
+                    }
+                    3 -> {
+                        scaleSpot(h, 0.87f)
+                        save()
+                        showScene()
+                    }
+                    4 -> deleteSpot(sc, h)
+                }
+            }
+            .show()
+    }
+
+    private fun scaleSpot(h: Hotspot, f: Float) {
+        val cx = h.rx + h.rw / 2f
+        val cy = h.ry + h.rh / 2f
+        var nw = h.rw * f
+        var nh = h.rh * f
+        if (nw > 0.9f) nw = 0.9f
+        if (nh > 0.9f) nh = 0.9f
+        if (nw < 0.04f) nw = 0.04f
+        if (nh < 0.03f) nh = 0.03f
+        h.rw = nw
+        h.rh = nh
+        h.rx = Math.max(0f, Math.min(1f - nw, cx - nw / 2f))
+        h.ry = Math.max(0f, Math.min(1f - nh, cy - nh / 2f))
+    }
+
+    private fun deleteSpot(sc: Scene, h: Hotspot) {
+        var msg = "この場所を消します。"
+        if (h.kind == Hotspot.KIND_SLOT) {
+            val n = db.filesIn(h.target).size
+            if (n > 0) msg = "中に " + n + " 個のファイルがあります。場所を消してもファイルは残りますが、たどり着けなくなります。"
+        }
+        AlertDialog.Builder(this)
+            .setTitle(h.label + " を消す")
+            .setMessage(msg)
+            .setPositiveButton("消す") { _, _ ->
+                sc.hotspots.remove(h)
+                save()
+                showScene()
+            }
+            .setNegativeButton("やめる", null)
+            .show()
+    }
+
+    // ---------- 収納 ----------
 
     private fun showSlot(slotId: String) {
         stopPlayer()
@@ -97,20 +530,22 @@ class MainActivity : Activity() {
         screen = "slot"
         currentSlot = slotId
         root.removeAllViews()
+        val def = house.slot(slotId)
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
         col.setBackgroundColor(Color.parseColor("#22222A"))
         col.setPadding(24, 24, 24, 24)
         val title = TextView(this)
-        title.text = slotNames[slotId] ?: slotId
+        title.text = if (def != null) def.name else "収納"
         title.textSize = 22f
         title.setTextColor(Color.WHITE)
         val hint = TextView(this)
-        hint.text = slotHints[slotId] ?: ""
+        hint.text = if (def != null) def.hint else ""
         hint.textSize = 12f
         hint.setTextColor(Color.parseColor("#8888AA"))
         col.addView(title)
         col.addView(hint)
+
         val listWrap = ScrollView(this)
         val list = LinearLayout(this)
         list.orientation = LinearLayout.VERTICAL
@@ -131,10 +566,8 @@ class MainActivity : Activity() {
             list.addView(tv)
         }
         listWrap.addView(list)
-        col.addView(
-            listWrap,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        )
+        col.addView(listWrap, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
         val btns = LinearLayout(this)
         val put = Button(this)
         put.text = "しまう"
@@ -149,15 +582,36 @@ class MainActivity : Activity() {
     }
 
     private fun fileMenu(f: FileRow) {
-        val items = arrayOf("見る", "取り出す", "燃やす")
+        val items = arrayOf("見る", "取り出す", "別の場所へ移す", "燃やす")
         AlertDialog.Builder(this)
             .setTitle(f.origName)
             .setItems(items) { _, w ->
                 when (w) {
                     0 -> showViewer(f)
                     1 -> pickExport(f)
-                    2 -> confirmBurn(f)
+                    2 -> moveFile(f)
+                    3 -> confirmBurn(f)
                 }
+            }
+            .show()
+    }
+
+    private fun moveFile(f: FileRow) {
+        val targets = house.slots.filter { it.id != f.slotId }
+        if (targets.isEmpty()) {
+            toast("ほかに収納がありません")
+            return
+        }
+        val names = targets.map { d ->
+            val sc = house.sceneOfSlot(d.id)
+            d.name + (if (sc != null) "（" + sc.name + "）" else "")
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("どこへ移す")
+            .setItems(names) { _, idx ->
+                db.moveFile(f.id, targets[idx].id)
+                toast("移しました")
+                currentSlot?.let { showSlot(it) }
             }
             .show()
     }
@@ -183,51 +637,42 @@ class MainActivity : Activity() {
         bar.addView(name)
         col.addView(bar)
         val body = FrameLayout(this)
-        col.addView(
-            body,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        )
+        col.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(col)
 
         val file = File(vaultDir, f.storedName)
-        when {
-            f.mime.startsWith("image/") -> {
-                val iv = ImageView(this)
-                iv.setImageBitmap(decodeScaled(file))
-                body.addView(iv)
-            }
-            f.mime.startsWith("text/") || f.mime == "application/json" -> {
-                val sc = ScrollView(this)
-                val tv = TextView(this)
-                tv.setTextColor(Color.parseColor("#DDDDEE"))
-                tv.textSize = 14f
-                tv.setPadding(24, 24, 24, 24)
-                tv.text = readTextHead(file)
-                sc.addView(tv)
-                body.addView(sc)
-            }
-            f.mime.startsWith("audio/") -> {
-                body.addView(playerView(file, null))
-            }
-            f.mime.startsWith("video/") -> {
-                val sv = SurfaceView(this)
-                body.addView(sv)
-                body.addView(
-                    playerView(file, sv),
-                    FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.BOTTOM
-                    )
+        if (f.mime.startsWith("image/")) {
+            val iv = ImageView(this)
+            iv.setImageBitmap(decodeScaled(file))
+            body.addView(iv)
+        } else if (f.mime.startsWith("text/") || f.mime == "application/json") {
+            val sc = ScrollView(this)
+            val tv = TextView(this)
+            tv.setTextColor(Color.parseColor("#DDDDEE"))
+            tv.textSize = 14f
+            tv.setPadding(24, 24, 24, 24)
+            tv.text = readTextHead(file)
+            sc.addView(tv)
+            body.addView(sc)
+        } else if (f.mime.startsWith("audio/")) {
+            body.addView(playerView(file, null))
+        } else if (f.mime.startsWith("video/")) {
+            val sv = SurfaceView(this)
+            body.addView(sv)
+            body.addView(
+                playerView(file, sv),
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM
                 )
-            }
-            else -> {
-                val tv = TextView(this)
-                tv.text = "この形式の内蔵ビューアは未対応です。\n「取り出す」で書き出して開いてください。"
-                tv.setTextColor(Color.parseColor("#AAAAAA"))
-                tv.setPadding(24, 48, 24, 24)
-                body.addView(tv)
-            }
+            )
+        } else {
+            val tv = TextView(this)
+            tv.text = "この形式の内蔵ビューアは未対応です。\n「取り出す」で書き出して開いてください。"
+            tv.setTextColor(Color.parseColor("#AAAAAA"))
+            tv.setPadding(24, 48, 24, 24)
+            body.addView(tv)
         }
     }
 
@@ -240,7 +685,7 @@ class MainActivity : Activity() {
             mp.setDataSource(fis.fd)
             fis.close()
         } catch (e: Exception) {
-            toast("開けません: " + e.message)
+            toast("開けません")
         }
         val playBtn = Button(this)
         playBtn.text = "再生"
@@ -262,6 +707,7 @@ class MainActivity : Activity() {
                         toast("再生できません")
                     }
                 }
+
                 override fun surfaceChanged(h: SurfaceHolder, fmt: Int, w: Int, hh: Int) {}
                 override fun surfaceDestroyed(h: SurfaceHolder) {}
             })
@@ -270,18 +716,18 @@ class MainActivity : Activity() {
         playBtn.setOnClickListener {
             if (!ready) {
                 toast("準備中です")
-                return@setOnClickListener
-            }
-            try {
-                if (mp.isPlaying) {
-                    mp.pause()
-                    playBtn.text = "再生"
-                } else {
-                    mp.start()
-                    playBtn.text = "一時停止"
+            } else {
+                try {
+                    if (mp.isPlaying) {
+                        mp.pause()
+                        playBtn.text = "再生"
+                    } else {
+                        mp.start()
+                        playBtn.text = "一時停止"
+                    }
+                } catch (e: Exception) {
+                    toast("再生できません")
                 }
-            } catch (e: Exception) {
-                toast("再生できません")
             }
         }
         val row = LinearLayout(this)
@@ -291,10 +737,18 @@ class MainActivity : Activity() {
     }
 
     private fun stopPlayer() {
-        try { player?.stop() } catch (e: Exception) {}
-        try { player?.release() } catch (e: Exception) {}
+        try {
+            player?.stop()
+        } catch (e: Exception) {
+        }
+        try {
+            player?.release()
+        } catch (e: Exception) {
+        }
         player = null
     }
+
+    // ---------- 取込・書出 ----------
 
     private fun pickImport() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
@@ -308,7 +762,7 @@ class MainActivity : Activity() {
         pendingExportId = f.id
         val i = Intent(Intent.ACTION_CREATE_DOCUMENT)
         i.addCategory(Intent.CATEGORY_OPENABLE)
-        i.type = if (f.mime.isBlank()) "application/octet-stream" else f.mime
+        i.type = if (f.mime.length == 0) "application/octet-stream" else f.mime
         i.putExtra(Intent.EXTRA_TITLE, f.origName)
         startActivityForResult(i, REQ_EXPORT)
     }
@@ -352,8 +806,26 @@ class MainActivity : Activity() {
                 }
                 toast("取り出しました")
             } catch (e: Exception) {
-                toast("失敗: " + e.message)
+                toast("失敗しました")
             }
+        } else if (requestCode == REQ_SCENE_IMG) {
+            val u = data.data ?: return
+            val target = imgTargetScene ?: return
+            val sc = house.scene(target) ?: return
+            try {
+                val stored = UUID.randomUUID().toString().replace("-", "")
+                contentResolver.openInputStream(u)?.use { ins ->
+                    FileOutputStream(File(sceneDir, stored)).use { ins.copyTo(it) }
+                }
+                val old = sc.image
+                sc.image = stored
+                save()
+                if (old != null) File(sceneDir, old).delete()
+                toast("画像を置きました")
+            } catch (e: Exception) {
+                toast("画像を読み込めませんでした")
+            }
+            if (screen == "scenes") showScenes() else showScene()
         }
     }
 
@@ -383,6 +855,8 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- 小道具 ----------
+
     private fun decodeScaled(file: File): Bitmap? {
         return try {
             val o = BitmapFactory.Options()
@@ -402,7 +876,8 @@ class MainActivity : Activity() {
         return try {
             val max = 200000
             val bytes = FileInputStream(file).use { ins ->
-                val buf = ByteArray(minOf(file.length(), max.toLong()).toInt())
+                val cap = Math.min(file.length(), max.toLong()).toInt()
+                val buf = ByteArray(cap)
                 var off = 0
                 while (off < buf.size) {
                     val r = ins.read(buf, off, buf.size - off)
@@ -432,13 +907,16 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
-        when (screen) {
-            "viewer" -> {
-                val slot = currentSlot
-                if (slot != null) showSlot(slot) else showScene()
-            }
-            "slot" -> showScene()
-            else -> super.onBackPressed()
+        if (screen == "viewer") {
+            val slot = currentSlot
+            if (slot != null) showSlot(slot) else showScene()
+        } else if (screen == "slot" || screen == "scenes") {
+            showScene()
+        } else if (editing) {
+            editing = false
+            showScene()
+        } else {
+            super.onBackPressed()
         }
     }
 
@@ -450,5 +928,6 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_IMPORT = 1
         private const val REQ_EXPORT = 2
+        private const val REQ_SCENE_IMG = 3
     }
 }
