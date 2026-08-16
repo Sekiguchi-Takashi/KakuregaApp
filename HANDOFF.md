@@ -3,7 +3,7 @@
 ## これは何
 カクレガ ― 探索型ファイル保管アプリ。仮想の家（1部屋）をタップで探索し、家具ごとにファイルを隠す。仕様は docs/SPEC.md、錠システムの設計原理は docs/ONTOLOGY.md。
 
-## 現状（v1.3 = Phase 3 錠システム）
+## 現状（v1.3.1 = Phase 3 錠システム）
 - 依存ゼロ・プログラマティックUI（Compose不使用）・パーミッション宣言ゼロ
 - 家の定義は filesDir/house.json（House.kt、org.jsonで読み書き。scenes[]/slots[]、初回は5家具のリビングをseed）
 - SceneView はモデル駆動。scene.image があれば背景画像をcover配置、なければ従来の自前Canvas描画（art フィールドで家具の絵を選ぶ）。床下は隠しスポット（長押しヒントでのみ枠が出る）。件数バッジ表示
@@ -34,3 +34,7 @@
 - settings.gradle の Maven Central ミラーは429対策。消さない
 - .github/workflows/release.yml と ci/ はカタログ管理システムの持ち物。削除・追跡解除禁止
 - workflow の run 行が `"` で始まる場合は必ず `run: |` を使う（YAMLパース事故防止）
+
+## v1.3.1 の修正
+- コンパイルエラー1件: MainActivity の増築モードで収納を新規作成する箇所が SlotDef の第4引数に文字列 "none" を渡していた（SlotDef.lock は Lock 型に変更済みだった）。Lock.none() に修正
+- 教訓: 型を変えたときは、そのコンストラクタの呼び出し箇所を全ファイルで grep して数える。House.kt 側は一括置換したが MainActivity 側の1箇所が漏れた

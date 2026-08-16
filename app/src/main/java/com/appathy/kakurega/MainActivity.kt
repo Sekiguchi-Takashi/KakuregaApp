@@ -612,7 +612,7 @@ class MainActivity : Activity() {
                             val nm = et.text.toString().trim()
                             val name = if (nm.length > 0) nm else "収納"
                             val slotId = newId("k")
-                            house.slots.add(SlotDef(slotId, name, "どのファイルでも置けます", "none"))
+                            house.slots.add(SlotDef(slotId, name, "どのファイルでも置けます", Lock.none()))
                             sc.hotspots.add(
                                 Hotspot(newId("h"), name, l, t, w, h, cb.isChecked, Hotspot.KIND_SLOT, slotId, "panel")
                             )
