@@ -198,26 +198,42 @@ object LockRules {
         "かんたん（隠し場所だけ）",
         "金庫（暗証番号）",
         "厳重（鍵アイテム＋暗証番号）",
+        "二台金庫（二台目の端末）",
         "最深部（分散片＋暗証番号）",
+        "厳重な二台金庫（二台目＋暗証番号）",
         "家族金庫（分散片＋暗証番号 または 暗証番号）",
         "錠をはずす"
     )
 
+    const val NEED_KEY = 0
+    const val NEED_PIN = 1
+    const val NEED_BNSN = 2
+    const val NEED_LAN = 3
+
     fun presetNeeds(idx: Int): IntArray = when (idx) {
-        1 -> intArrayOf(1)          // PIN
-        2 -> intArrayOf(0, 1)       // KEY, PIN
-        3 -> intArrayOf(2, 1)       // BNSN, PIN
-        4 -> intArrayOf(2, 1)       // BNSN, PIN（復旧枝はPINのみ）
+        1 -> intArrayOf(NEED_PIN)
+        2 -> intArrayOf(NEED_KEY, NEED_PIN)
+        3 -> intArrayOf(NEED_LAN)
+        4 -> intArrayOf(NEED_BNSN, NEED_PIN)
+        5 -> intArrayOf(NEED_LAN, NEED_PIN)
+        6 -> intArrayOf(NEED_BNSN, NEED_PIN)
         else -> intArrayOf()
     }
 
-    fun buildPreset(idx: Int, itemId: String, pinHash: String, bnsnParam: String, outside: Boolean): Lock {
+    fun isRemove(idx: Int): Boolean = idx == 7
+
+    fun buildPreset(
+        idx: Int, itemId: String, pinHash: String, bnsnParam: String,
+        lanParam: String, outside: Boolean, lanOutside: Boolean
+    ): Lock {
         return when (idx) {
             0 -> Lock.single(LockElem(Elem.HIDDEN, "", false))
             1 -> Lock.single(LockElem(Elem.PIN, pinHash, false))
             2 -> Lock.single(LockElem(Elem.KEY, itemId, false), LockElem(Elem.PIN, pinHash, false))
-            3 -> Lock.single(LockElem(Elem.BNSN, bnsnParam, outside), LockElem(Elem.PIN, pinHash, false))
-            4 -> Lock(
+            3 -> Lock.single(LockElem(Elem.LAN, lanParam, lanOutside))
+            4 -> Lock.single(LockElem(Elem.BNSN, bnsnParam, outside), LockElem(Elem.PIN, pinHash, false))
+            5 -> Lock.single(LockElem(Elem.LAN, lanParam, lanOutside), LockElem(Elem.PIN, pinHash, false))
+            6 -> Lock(
                 mutableListOf(
                     mutableListOf(LockElem(Elem.BNSN, bnsnParam, outside), LockElem(Elem.PIN, pinHash, false)),
                     mutableListOf(LockElem(Elem.PIN, pinHash, false))

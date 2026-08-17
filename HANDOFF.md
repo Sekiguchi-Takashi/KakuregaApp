@@ -3,7 +3,7 @@
 ## これは何
 カクレガ ― 探索型ファイル保管アプリ。仮想の家（1部屋）をタップで探索し、家具ごとにファイルを隠す。仕様は docs/SPEC.md、錠システムの設計原理は docs/ONTOLOGY.md。
 
-## 現状（v1.3.1 = Phase 3 錠システム）
+## 現状（v1.4 = Phase 4 LANペア解錠まで）
 - 依存ゼロ・プログラマティックUI（Compose不使用）・パーミッション宣言ゼロ
 - 家の定義は filesDir/house.json（House.kt、org.jsonで読み書き。scenes[]/slots[]、初回は5家具のリビングをseed）
 - SceneView はモデル駆動。scene.image があれば背景画像をcover配置、なければ従来の自前Canvas描画（art フィールドで家具の絵を選ぶ）。床下は隠しスポット（長押しヒントでのみ枠が出る）。件数バッジ表示
@@ -26,7 +26,8 @@
 - 鍵アイテムは house.items（at=ホットスポットid or inventory）。作成時に置き場所を選ばせる
 
 ## 次にやること
-- Phase 4: LANペア解錠（NSD + HMACチャレンジレスポンス）
+- 錠の条件木カスタム編集UI（現在はプリセット8種のみ）
+- 部屋のホットスポットをドラッグで動かす（現在は作り直しか拡縮のみ）
 
 ## ビルドの注意
 - ビルドは GitHub Actions のみ（手元コンパイル不可の体制）
@@ -38,3 +39,15 @@
 ## v1.3.1 の修正
 - コンパイルエラー1件: MainActivity の増築モードで収納を新規作成する箇所が SlotDef の第4引数に文字列 "none" を渡していた（SlotDef.lock は Lock 型に変更済みだった）。Lock.none() に修正
 - 教訓: 型を変えたときは、そのコンストラクタの呼び出し箇所を全ファイルで grep して数える。House.kt 側は一括置換したが MainActivity 側の1箇所が漏れた
+
+## v1.4 で入ったもの
+- Lan.kt: NSDで相手を見つけ、分割した秘密でチャレンジレスポンス。詳細は docs/SPEC.md 改訂v0.4
+- 鍵になる側は ServerSocket + NSD登録。預かった b と c は SharedPreferences "lan_keyring" に pairId をキーに保存
+- メニューに「二台目の端末」を追加（鍵になる／預かった錠を忘れる）
+- プリセットは8種に。3=二台金庫、5=厳重な二台金庫、7=錠をはずす。LockRules.isRemove(idx) で判定
+- AndroidManifest に INTERNET と ACCESS_NETWORK_STATE を追加（パーミッションゼロはここで終了）
+
+## ビルド規約の変更（重要）
+- build.yml は同梱しない。書くと必ず落ちるため、CIは release.yml のタグ起動のみに一本化
+- deploy.sh のタグ対象SHAは git rev-parse HEAD でローカルから取る。push直後にAPIで参照すると反映待ちで一つ前のコミットにタグが付く
+- タグ採番は git ls-remote --tags + sort -V。Release基準にすると、ビルド失敗でReleaseが無い間ずっと同じ番号を再試行して詰まる

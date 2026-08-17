@@ -206,11 +206,7 @@ class MainActivity : Activity() {
                     .show()
             }
             Elem.BNSN -> askShares(slotId, need)
-            Elem.LAN -> AlertDialog.Builder(this)
-                .setTitle(def.name)
-                .setMessage("二台目の端末と繋がないと開かない錠です。この機能はまだ実装していません（Phase 4）。")
-                .setPositiveButton("わかった", null)
-                .show()
+            Elem.LAN -> askLan(slotId, need)
             else -> showSlot(slotId)
         }
     }
@@ -220,11 +216,31 @@ class MainActivity : Activity() {
         Elem.KEY -> house.hasItem(e.param)
         Elem.PIN -> pinOk.contains(e.param)
         Elem.BNSN -> bnsnOk.contains(e.param)
+        Elem.LAN -> lanOk.contains(e.param)
         else -> false
     }
 
     private val pinOk = mutableSetOf<String>()
     private val bnsnOk = mutableSetOf<String>()
+    private val lanOk = mutableSetOf<String>()
+
+    private fun askLan(slotId: String, e: LockElem) {
+        AlertDialog.Builder(this)
+            .setTitle("二台目の端末が要る")
+            .setMessage("相手の端末でカクレガを開き、メニューの「二台目の端末」から「この端末を鍵にする」を選んでください。同じWi-Fiに繋いだうえで探します。")
+            .setPositiveButton("探す") { _, _ ->
+                toast("探しています…")
+                Lan.unlock(this, e.param) { ok, msg ->
+                    toast(msg)
+                    if (ok) {
+                        lanOk.add(e.param)
+                        tryOpen(slotId)
+                    }
+                }
+            }
+            .setNegativeButton("やめる", null)
+            .show()
+    }
 
     private fun askPin(slotId: String, e: LockElem) {
         val until = prefs().getLong("pinlock_" + slotId, 0L)
@@ -355,7 +371,7 @@ class MainActivity : Activity() {
         val items = if (editing)
             arrayOf("部屋の一覧・追加", "この部屋の画像を選ぶ", "この部屋の名前", "増築モードを終わる")
         else
-            arrayOf("調べられる場所を光らせる", "持ちもの", "部屋の一覧・追加", "増築モードに入る")
+            arrayOf("調べられる場所を光らせる", "持ちもの", "二台目の端末", "部屋の一覧・追加", "増築モードに入る")
         AlertDialog.Builder(this)
             .setTitle(if (editing) "増築メニュー" else "メニュー")
             .setItems(items) { _, w ->
@@ -373,8 +389,9 @@ class MainActivity : Activity() {
                     when (w) {
                         0 -> showScene().also { root.postDelayed({ hintNow() }, 100) }
                         1 -> showInventory()
-                        2 -> showScenes()
-                        3 -> {
+                        2 -> lanMenu()
+                        3 -> showScenes()
+                        4 -> {
                             editing = true
                             showScene()
                         }
@@ -829,7 +846,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("錠を選ぶ")
             .setItems(LockRules.PRESET_NAMES) { _, idx ->
-                if (idx == 5) {
+                if (LockRules.isRemove(idx)) {
                     def.lock = Lock.none()
                     save()
                     toast("錠をはずしました")
@@ -846,10 +863,12 @@ class MainActivity : Activity() {
         var itemId = ""
         var pinHash = ""
         var bnsnParam = ""
+        var lanParam = ""
         var outside = false
+        var lanOutside = false
 
         fun finish() {
-            def.lock = LockRules.buildPreset(idx, itemId, pinHash, bnsnParam, outside)
+            def.lock = LockRules.buildPreset(idx, itemId, pinHash, bnsnParam, lanParam, outside, lanOutside)
             save()
             opened.add(def.id)
             lockMenu(def)
@@ -926,13 +945,54 @@ class MainActivity : Activity() {
                 .show()
         }
 
+        fun askLanPair(after: () -> Unit) {
+            AlertDialog.Builder(this)
+                .setTitle("二台目の端末で守る")
+                .setMessage("相手の端末でカクレガを開き、メニューの「二台目の端末」から「この端末を鍵にする」を選んでください。同じWi-Fiに繋いでから探します。")
+                .setPositiveButton("探す") { _, _ ->
+                    toast("探しています…")
+                    Lan.discover(this, 4000L) { peers ->
+                        if (peers.isEmpty()) {
+                            toast("見つかりませんでした")
+                        } else {
+                            Lan.pair(peers[0]) { param, code ->
+                                if (param == null) {
+                                    toast("ペア設定に失敗しました")
+                                } else {
+                                    lanParam = param
+                                    val cb = CheckBox(this)
+                                    cb.text = "相手の端末はこの家とは別の場所にある"
+                                    val box = LinearLayout(this)
+                                    box.orientation = LinearLayout.VERTICAL
+                                    box.setPadding(40, 20, 40, 0)
+                                    box.addView(cb)
+                                    AlertDialog.Builder(this)
+                                        .setTitle("確認番号 " + code)
+                                        .setMessage("相手の端末にも同じ番号が出ていますか。違う番号なら、途中に別の端末が入っています。")
+                                        .setView(box)
+                                        .setPositiveButton("同じだった") { _, _ ->
+                                            lanOutside = cb.isChecked
+                                            after()
+                                        }
+                                        .setNegativeButton("違った") { _, _ -> toast("設定をやめました") }
+                                        .show()
+                                }
+                            }
+                        }
+                    }
+                }
+                .setNegativeButton("やめる", null)
+                .show()
+        }
+
         var chain: () -> Unit = { finish() }
         for (i in needs.indices.reversed()) {
             val next = chain
             val what = needs[i]
             chain = when (what) {
-                0 -> ({ askKey(next) })
-                1 -> ({ askNewPin(next) })
+                LockRules.NEED_KEY -> ({ askKey(next) })
+                LockRules.NEED_PIN -> ({ askNewPin(next) })
+                LockRules.NEED_LAN -> ({ askLanPair(next) })
                 else -> ({ askBnsn(next) })
             }
         }
@@ -957,6 +1017,49 @@ class MainActivity : Activity() {
                 after()
             }
             .setOnCancelListener { after() }
+            .show()
+    }
+
+    private fun lanMenu() {
+        val on = Lan.isServing()
+        val n = Lan.pairCount(this)
+        val items = arrayOf(
+            if (on) "鍵になるのをやめる" else "この端末を鍵にする",
+            "預かっている錠を忘れる（" + n + "件）"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("二台目の端末")
+            .setMessage(
+                if (on) "いま鍵として待ち受けています。同じWi-Fiの相手から開けられます。"
+                else "この端末を、別の端末の錠を開けるための鍵にできます。"
+            )
+            .setItems(items) { _, w ->
+                if (w == 0) {
+                    if (on) {
+                        Lan.stopKeyDevice()
+                        toast("待ち受けをやめました")
+                    } else {
+                        Lan.startKeyDevice(this, { code ->
+                            AlertDialog.Builder(this)
+                                .setTitle("確認番号 " + code)
+                                .setMessage("相手の端末にも同じ番号が出ていれば、その相手と繋がっています。")
+                                .setPositiveButton("わかった", null)
+                                .show()
+                        }, { msg -> toast(msg) })
+                        toast("鍵として待ち受けます")
+                    }
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle("忘れる")
+                        .setMessage("この端末が預かっている相方の秘密を全部消します。相手の錠は二度と開けられなくなります。")
+                        .setPositiveButton("消す") { _, _ ->
+                            getSharedPreferences("lan_keyring", MODE_PRIVATE).edit().clear().apply()
+                            toast("消しました")
+                        }
+                        .setNegativeButton("やめる", null)
+                        .show()
+                }
+            }
             .show()
     }
 
@@ -1339,6 +1442,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         stopPlayer()
+        Lan.stopKeyDevice()
         super.onDestroy()
     }
 
