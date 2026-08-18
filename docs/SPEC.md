@@ -126,3 +126,14 @@ LANペア解錠を Lan.kt に実装。秘密を二台に割って持たせる。
 - 相手の発見は NSD（_kakurega._tcp）。ペア設定時は6桁の確認番号を両端末に出して目視照合（カメラ権限を増やさない）
 - 権限は INTERNET と ACCESS_NETWORK_STATE の2つ。位置情報は使わない
 - 正直な限界: 同じWi-Fiにいて両方の端末を触れる相手（A4）は防げない。診断表もそう出す
+
+## 改訂 v0.5（分散片の受け取り）
+
+BUNSAN_VAULT_API.md v1.0 の実装。契約書はリポジトリ直下に置く（BunsanApp側と同じ写しを保つこと）。
+
+- VaultDocumentsProvider を追加。authorities は com.appathy.kakurega.documents、android:permission は MANAGE_DOCUMENTS（呼び出し側に課す条件であり、カクレガが権限を要求するわけではない）
+- 公開するのは shareVault=true かつ 隠しスポットでない かつ 分散片で施錠されていない収納だけ。3条件はすべて Provider 側でも再判定する
+- document_id は root / slot:<slotId> / file:<fileId>。実体パスは外に出さない
+- 施錠中は「郵便受け」: 一覧は空・読み出しは拒否・新規作成は許可。一覧が空で衝突を検出できないため、作成時は台帳を見て自動で連番を付ける
+- 表示名は「部屋名の収納名（錠の種類）」。独立性グループを決めるのはBunsanApp側であり、カクレガから機械的に伝える口は作らない
+- 復元は実装しない。BNSNヘッダを読むのは解錠判定と循環検知のためだけ

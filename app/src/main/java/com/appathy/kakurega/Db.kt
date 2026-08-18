@@ -46,6 +46,12 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "kakurega.db", null, 1) {
         return writableDatabase.insert("files", null, v)
     }
 
+    fun syncSize(id: Long, size: Long) {
+        val v = ContentValues()
+        v.put("size", size)
+        writableDatabase.update("files", v, "id=?", arrayOf(id.toString()))
+    }
+
     fun moveFile(id: Long, slot: String) {
         val v = ContentValues()
         v.put("slot_id", slot)

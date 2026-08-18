@@ -87,13 +87,20 @@ class Scene(
     }
 }
 
-class SlotDef(val id: String, var name: String, var hint: String, var lock: Lock) {
+class SlotDef(
+    val id: String,
+    var name: String,
+    var hint: String,
+    var lock: Lock,
+    var shareVault: Boolean
+) {
     fun toJson(): JSONObject {
         val o = JSONObject()
         o.put("id", id)
         o.put("name", name)
         o.put("hint", hint)
         o.put("lock", lock.toJson())
+        o.put("shareVault", shareVault)
         return o
     }
 
@@ -102,7 +109,8 @@ class SlotDef(val id: String, var name: String, var hint: String, var lock: Lock
             o.optString("id", newId("k")),
             o.optString("name", "収納"),
             o.optString("hint", ""),
-            Lock.fromJson(o.optJSONObject("lock"))
+            Lock.fromJson(o.optJSONObject("lock")),
+            o.optBoolean("shareVault", false)
         )
     }
 }
@@ -142,6 +150,13 @@ class House(
     fun item(id: String): Item? = items.firstOrNull { it.id == id }
     fun itemsAt(hotspotId: String): List<Item> = items.filter { it.at == hotspotId }
     fun hasItem(id: String): Boolean = items.any { it.id == id && it.at == Item.INVENTORY }
+
+    fun hotspotOfSlot(slotId: String): Hotspot? {
+        for (s in scenes) for (h in s.hotspots) {
+            if (h.kind == Hotspot.KIND_SLOT && h.target == slotId) return h
+        }
+        return null
+    }
 
     fun sceneOfSlot(slotId: String): Scene? =
         scenes.firstOrNull { s -> s.hotspots.any { it.kind == Hotspot.KIND_SLOT && it.target == slotId } }
@@ -219,7 +234,7 @@ class House(
                         val name = r[1] as String
                         val kind = r[6] as String
                         if (kind == Hotspot.KIND_SLOT && h.slot(slotId) == null) {
-                            h.slots.add(SlotDef(slotId, name, r[7] as String, Lock.none()))
+                            h.slots.add(SlotDef(slotId, name, r[7] as String, Lock.none(), false))
                         }
                         hs.add(
                             Hotspot(
@@ -278,11 +293,11 @@ class House(
 
         private fun seed(): House {
             val slots = mutableListOf(
-                SlotDef("bookshelf", "本棚", "PDF・テキスト向け（どのファイルでも置けます）", Lock.none()),
-                SlotDef("stereo", "ステレオ", "音楽向け（どのファイルでも置けます）", Lock.none()),
-                SlotDef("tvstand", "テレビ台", "動画向け（どのファイルでも置けます）", Lock.none()),
-                SlotDef("drawer", "引き出し", "写真向け（どのファイルでも置けます）", Lock.none()),
-                SlotDef("floor", "床下", "隠し場所。なんでも", Lock.none())
+                SlotDef("bookshelf", "本棚", "PDF・テキスト向け（どのファイルでも置けます）", Lock.none(), false),
+                SlotDef("stereo", "ステレオ", "音楽向け（どのファイルでも置けます）", Lock.none(), false),
+                SlotDef("tvstand", "テレビ台", "動画向け（どのファイルでも置けます）", Lock.none(), false),
+                SlotDef("drawer", "引き出し", "写真向け（どのファイルでも置けます）", Lock.none(), false),
+                SlotDef("floor", "床下", "隠し場所。なんでも", Lock.none(), false)
             )
             val hs = mutableListOf(
                 Hotspot("h_bookshelf", "本棚", 0.05f, 0.30f, 0.20f, 0.45f, false, Hotspot.KIND_SLOT, "bookshelf", "bookshelf"),

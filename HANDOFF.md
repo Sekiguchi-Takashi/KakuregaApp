@@ -3,7 +3,7 @@
 ## これは何
 カクレガ ― 探索型ファイル保管アプリ。仮想の家（1部屋）をタップで探索し、家具ごとにファイルを隠す。仕様は docs/SPEC.md、錠システムの設計原理は docs/ONTOLOGY.md。
 
-## 現状（v1.4.1 = Phase 4 LANペア解錠まで）
+## 現状（v1.5 = 分散片の受け取りまで）
 - 依存ゼロ・プログラマティックUI（Compose不使用）・パーミッション宣言ゼロ
 - 家の定義は filesDir/house.json（House.kt、org.jsonで読み書き。scenes[]/slots[]、初回は5家具のリビングをseed）
 - SceneView はモデル駆動。scene.image があれば背景画像をcover配置、なければ従来の自前Canvas描画（art フィールドで家具の絵を選ぶ）。床下は隠しスポット（長押しヒントでのみ枠が出る）。件数バッジ表示
@@ -53,3 +53,10 @@
 - Release基準の採番にすると、ビルド失敗でReleaseが無い間ずっと同じ番号を再試行して詰まる
 - deploy.sh の第2引数 notag で push のみ（タグを発行しない）
 - ファイルを削除する納品では deploy.sh に rm -f 対象パス を足す。unzip -o は端末の旧ファイルを消さないため、消したはずのファイルが端末に残ってコミットされる
+
+## v1.5 で入ったもの
+- VaultDocumentsProvider: SAF経由で他アプリ（BunsanApp）から分散片を保存できる。契約は BUNSAN_VAULT_API.md v1.0（リポジトリ直下、BunsanApp側と同じ写しを保つ）
+- SlotDef.shareVault（既定false）。増築モードで収納の枠をタップ →「分散片の保管先として公開する」
+- 公開の3条件（shareVault / 隠しスポットでない / 分散片で施錠されていない）はUIとProviderの両方で判定する。片方だけ直さないこと
+- 解錠状態は object Unlocked.slots でプロセス共有。MainActivity と Provider が同じ判定を見る
+- 外から書き込まれたファイルは台帳のサイズが0のままなので、収納画面で実ファイル長と突き合わせて Db.syncSize で直す

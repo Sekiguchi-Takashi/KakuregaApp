@@ -86,7 +86,7 @@ class MainActivity : Activity() {
         House.save(this, house)
     }
 
-    private val opened = mutableSetOf<String>()   // このセッションで開けた収納
+    private val opened = Unlocked.slots           // 解錠状態はProviderとも共有する
 
     private fun prefs() = getSharedPreferences("kakurega", MODE_PRIVATE)
 
@@ -629,7 +629,7 @@ class MainActivity : Activity() {
                             val nm = et.text.toString().trim()
                             val name = if (nm.length > 0) nm else "収納"
                             val slotId = newId("k")
-                            house.slots.add(SlotDef(slotId, name, "どのファイルでも置けます", Lock.none()))
+                            house.slots.add(SlotDef(slotId, name, "どのファイルでも置けます", Lock.none(), false))
                             sc.hotspots.add(
                                 Hotspot(newId("h"), name, l, t, w, h, cb.isChecked, Hotspot.KIND_SLOT, slotId, "panel")
                             )
@@ -663,7 +663,13 @@ class MainActivity : Activity() {
 
     private fun editSpot(h: Hotspot) {
         val sc = house.scene(sceneId) ?: return
-        val items = arrayOf("名前を変える", if (h.hidden) "隠しを解除" else "隠し場所にする", "少し大きく", "少し小さく", "削除")
+        val def0 = if (h.kind == Hotspot.KIND_SLOT) house.slot(h.target) else null
+        val shareLabel = if (def0 == null) ""
+        else if (def0.shareVault) "分散片の保管先の公開をやめる" else "分散片の保管先として公開する"
+        val items = if (def0 == null)
+            arrayOf("名前を変える", if (h.hidden) "隠しを解除" else "隠し場所にする", "少し大きく", "少し小さく", "削除")
+        else
+            arrayOf("名前を変える", if (h.hidden) "隠しを解除" else "隠し場所にする", "少し大きく", "少し小さく", shareLabel, "削除")
         AlertDialog.Builder(this)
             .setTitle(h.label)
             .setItems(items) { _, w ->
@@ -701,9 +707,51 @@ class MainActivity : Activity() {
                         save()
                         showScene()
                     }
-                    4 -> deleteSpot(sc, h)
+                    4 -> if (def0 == null) deleteSpot(sc, h) else toggleShare(def0, h)
+                    5 -> deleteSpot(sc, h)
                 }
             }
+            .show()
+    }
+
+    // BUNSAN_VAULT_API.md 3節・5節の規則をここで守る
+    private fun toggleShare(def: SlotDef, h: Hotspot) {
+        if (def.shareVault) {
+            def.shareVault = false
+            save()
+            toast("公開をやめました")
+            showScene()
+            return
+        }
+        if (def.lock.hasBnsn()) {
+            AlertDialog.Builder(this)
+                .setTitle("公開できません")
+                .setMessage("この収納は分散片で施錠されています。分散片の保管先にすると、開けるために必要な片が中に閉じ込められる可能性があります。")
+                .setPositiveButton("わかった", null)
+                .show()
+            return
+        }
+        if (h.hidden) {
+            AlertDialog.Builder(this)
+                .setTitle("公開できません")
+                .setMessage("隠し場所は公開できません。保存先の一覧に出すと、隠し場所そのものを外に配ることになります。")
+                .setPositiveButton("わかった", null)
+                .show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("分散片の保管先として公開")
+            .setMessage(
+                "ほかのアプリの保存先一覧に、この収納が「" + def.name + "（" + def.lock.kindLabel() +
+                    "）」として並びます。中身の一覧が見えるのは錠を解いている間だけで、施錠中でも入れることはできます。"
+            )
+            .setPositiveButton("公開する") { _, _ ->
+                def.shareVault = true
+                save()
+                toast("公開しました")
+                showScene()
+            }
+            .setNegativeButton("やめる", null)
             .show()
     }
 
@@ -776,8 +824,10 @@ class MainActivity : Activity() {
             list.addView(empty)
         }
         for (f in rows) {
+            val real = File(vaultDir, f.storedName).length()
+            if (real != f.size) db.syncSize(f.id, real)
             val tv = TextView(this)
-            tv.text = f.origName + "\n" + human(f.size) + "　" + f.mime
+            tv.text = f.origName + "\n" + human(real) + "　" + f.mime
             tv.setTextColor(Color.parseColor("#DDDDEE"))
             tv.setPadding(8, 24, 8, 24)
             tv.setOnClickListener { fileMenu(f) }
@@ -786,6 +836,14 @@ class MainActivity : Activity() {
         listWrap.addView(list)
         col.addView(listWrap, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
+        if (def != null && def.shareVault) {
+            val sv = TextView(this)
+            sv.text = "ほかのアプリの保存先として公開中"
+            sv.textSize = 12f
+            sv.setTextColor(Color.parseColor("#64B5F6"))
+            sv.setPadding(0, 12, 0, 0)
+            col.addView(sv)
+        }
         if (def != null) {
             val lk = TextView(this)
             lk.text = "錠: " + def.lock.describe()

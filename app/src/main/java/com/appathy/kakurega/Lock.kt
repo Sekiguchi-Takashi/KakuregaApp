@@ -55,6 +55,32 @@ class Lock(val branches: MutableList<MutableList<LockElem>>) {
         return o
     }
 
+    // 分散片を解錠要素に含むか（循環禁止の判定に使う）
+    fun hasBnsn(): Boolean {
+        for (b in branches) for (e in b) if (e.type == Elem.BNSN) return true
+        return false
+    }
+
+    // SAF に出す表示名の末尾に付ける錠の種類
+    fun kindLabel(): String {
+        if (branches.isEmpty()) return "錠なし"
+        val first = branches[0]
+        val parts = mutableListOf<String>()
+        for (e in first) {
+            parts.add(
+                when (e.type) {
+                    Elem.PIN -> "PIN錠"
+                    Elem.LAN -> "二台目端末"
+                    Elem.KEY -> "鍵アイテム"
+                    Elem.BNSN -> "分散片"
+                    else -> "隠し場所"
+                }
+            )
+        }
+        val head = parts.joinToString("＋")
+        return if (branches.size > 1) head + "ほか" else head
+    }
+
     fun describe(): String {
         if (branches.isEmpty()) return "錠なし"
         val parts = mutableListOf<String>()
@@ -296,4 +322,9 @@ object LockRules {
 
         return if (fails.isEmpty()) "" else "錠の自己テスト失敗: " + fails.joinToString(" / ")
     }
+}
+
+// 解錠状態はプロセス内で共有する。DocumentsProvider も同じ判定を見る
+object Unlocked {
+    val slots = mutableSetOf<String>()
 }
